@@ -38,7 +38,7 @@ and a viewer. Tokens are spent on judgment, not on parsing.
   revisit after code changes.
 - A local web UI for understanding the system: graphs, traces, and
   editable detail pages.
-- One static binary, no runtime dependencies, clean and small.
+- One static binary, no runtime dependencies beyond `git`, clean and small.
 
 ## Non-goals for v1
 
@@ -57,7 +57,7 @@ and a viewer. Tokens are spent on judgment, not on parsing.
   Mermaid where a diagram helps.
 - Non-git projects. Drift detection requires a git work tree.
 - Size or count lints ("too many modules"). Abstraction heuristics live in
-  the skills.
+  `--help`.
 - Project configuration file.
 - npm or Homebrew packaging.
 - Any coupling with Beaver Backlog at runtime.
@@ -87,6 +87,11 @@ and a viewer. Tokens are spent on judgment, not on parsing.
   `no blueprint found, run beaver-blueprint init`.
 - The project root (the directory containing `blueprint/`) must be inside a
   git work tree. Anchors are relative to the project root.
+- Every command except `schema` and `--help` first checks that `git` is on
+  `PATH` and that the project root is inside a work tree, and fails
+  otherwise with `git not found, beaver-blueprint requires git` or
+  `not a git repository`. `init` is included: a blueprint created outside
+  a work tree could never pass `check`.
 - The directory is the only source of truth. No cache, index, or database.
 
 ### Layout
@@ -412,10 +417,18 @@ creates content and never deletes anything.
   Backlog. No JSON mode in v1.
 - Honors `NO_COLOR`. No spinners or interactive prompts.
 - Exit code 0 on success, 1 on any failure.
-- Root `--help` opens with a short workflow section for agents (read the
-  blueprint before designing, update it in the same change as the code,
-  run `check` and `status` before finishing, use the skills) followed by
-  the command reference. Help is the single entry point.
+- Root `--help` opens with a short workflow section for agents, followed
+  by the abstraction heuristics and then the command reference. Help is
+  the single entry point and the only maintenance guidance; there is no
+  maintenance skill. The workflow section covers:
+  - read the blueprint before designing a change;
+  - update it in the same change as the code, adding elements with `new`
+    and following the heuristics;
+  - before finishing, run `status` and, for each stale element, either
+    update it or confirm it still holds and stamp it with `verify`, then
+    run `check`;
+  - use `blueprint-greenfield` or `blueprint-brownfield` only when the
+    blueprint is first being written.
 
 ### Commands
 
@@ -453,13 +466,13 @@ present:
 
 ```
 This project keeps its architecture in a Beaver Blueprint (`blueprint/`).
-Run `beaver-blueprint --help` before reading or changing it. Skills:
-blueprint-greenfield, blueprint-brownfield, blueprint-maintain.
+Run `beaver-blueprint --help` before reading or changing it. Skills for
+writing the first blueprint: blueprint-greenfield, blueprint-brownfield.
 ```
 
 ### Skills
 
-Three skills in the Agent Skills `SKILL.md` format, embedded in the binary
+Two skills in the Agent Skills `SKILL.md` format, embedded in the binary
 so they version with the CLI, and installed by `init` into every agent
 skills directory found in the project (`.claude/skills/`,
 `.agents/skills/`, `.cursor/skills/`, and others verified at
@@ -472,13 +485,16 @@ implementation), falling back to `.agents/skills/` when none exist.
 - `blueprint-brownfield`: explores an existing codebase (structure, entry
   points, data, running it where possible) and produces a first
   blueprint, then guides the review-and-refine pass with the developer.
-- `blueprint-maintain`: how and when to update the blueprint during
-  normal work, driven by `status` output, and what to do before finishing
-  a task.
+
+Each skill performs one task that ends when the first blueprint is
+written. Day-to-day upkeep is not a skill: it is the workflow in root
+`--help`, which agents read every time they touch the blueprint.
 
 ### Abstraction heuristics
 
-These live in the skills, not in `check`:
+These live in root `--help`, so they apply whenever an element is
+written, not only during scaffolding. Both skills point to them rather
+than restating them. `check` does not enforce them.
 
 - A module is something you would assign ownership of or deploy
   separately. Never a file or a class. A typical application has five to
@@ -539,8 +555,9 @@ Served by `beaver-blueprint serve`.
   OpenAPI 3.1 document from the Go handler types and validates requests
   against it. The Go structs are the single source of truth for the
   schema; the element frontmatter schemas appear in the document's
-  components, and `beaver-blueprint schema` prints them from the embedded
-  document.
+  components, and `beaver-blueprint schema` builds the document at
+  runtime from the same types and prints them, so nothing is embedded
+  and it cannot go stale.
 - Generic element and document endpoints, plus dedicated derived views,
   because every type shares one envelope (id, type, frontmatter, body,
   hash) and type-specific behaviour is read-side and derived:
@@ -564,11 +581,14 @@ GET    /api/events                     SSE
 GET    /api/openapi.json
 ```
 
-- Codegen: `just openapi` writes `api/openapi.json` from the Go code;
-  `openapi-typescript` turns it into `web/src/api/types.ts`;
-  `openapi-fetch` provides the typed client. Both generated files are
-  committed and CI fails if regenerating them produces a diff, so the
-  frontend builds without a Go toolchain.
+- Codegen: `just openapi` writes `web/openapi.json` from the Go code
+  (`internal/server/openapigen`); Hey API (`@hey-api/openapi-ts` with its
+  bundled `@hey-api/client-fetch` plugin) turns it into a typed SDK and
+  client in `web/src/api/generated/`. Both outputs are committed and CI
+  fails if regenerating them produces a diff, so the frontend builds
+  without a Go toolchain. `openapi-typescript` and `openapi-fetch` were
+  the original plan; they were dropped because `openapi-typescript` is in
+  maintenance mode and does not support TypeScript 7.
 - All logic lives in the core package; the API and the CLI are thin
   interfaces over it.
 
@@ -579,55 +599,130 @@ Mirrors Beaver Backlog wherever the blueprint has no reason to differ.
 - Go 1.27, Cobra for the CLI, Huma mounted on standard library `net/http`
   through its `humago` adapter. Viper is not used: there is no
   configuration to load.
-- YAML through a library whose node API round-trips unknown keys and
-  preserves order (`goccy/go-yaml` or `yaml.v3`, chosen at
-  implementation).
-- `fsnotify` for watching, `doublestar` for anchor globs, `go-git` or
-  shelling out to `git` for history (chosen at implementation; shelling
-  out is acceptable since git is required anyway).
-- Frontend: Vite, React 19, TypeScript, Tailwind 4, Base UI for
-  components, MDXEditor for bodies, React Flow with ELK for generated
-  graphs, Mermaid for authored diagrams. Bundle size is irrelevant for a
-  localhost tool.
+- YAML through `go.yaml.in/yaml/v4`, whose node API round-trips unknown
+  keys and preserves order.
+- `fsnotify` for watching, `doublestar` for anchor globs. History comes
+  from shelling out to the `git` binary, not from `go-git`: results match
+  the user's own git exactly (config, ignores, worktrees, submodules), the
+  code is a few parsed commands, and git is already required.
+- Frontend: React 19, TypeScript 7, Tailwind 4, Base UI for components,
+  MDXEditor for bodies, React Flow with ELK for generated graphs, Mermaid
+  for authored diagrams. Bundle size is irrelevant for a localhost tool.
+- Frontend toolchain: Vite+ (`vp`), following the `carbon-fiber`
+  template. It wraps Vite 8 with Rolldown for dev and build, Oxfmt for
+  formatting, Oxlint for linting, and tsgolint (on the TypeScript 7
+  native compiler) for type-aware lint and type checking, all configured in
+  `web/vite.config.ts`. `vp check` is the single static check. No ESLint
+  or Prettier: typescript-eslint does not support TypeScript 7.
+- Package manager: pnpm, with carbon-fiber's supply-chain policy in
+  `web/pnpm-workspace.yaml` (4-day minimum release age, no dependency
+  build scripts, no exotic transitive sources, no trust downgrades,
+  strict engines).
 - Frontend built to `web/dist` and embedded with `go:embed`. End users
   never need Node.
+
+### Versions
+
+Checked 2026-11-24 and pinned exactly. Each is the newest release that
+satisfies the 4-day minimum release age; where the newest is younger,
+the previous release is used and the newest is noted.
+
+Go (`go.mod`):
+
+| Dependency                          | Version | Notes                                  |
+|-------------------------------------|---------|----------------------------------------|
+| Go                                  | 1.27    | latest 1.27.4                          |
+| `github.com/spf13/cobra`            | v1.10.2 |                                        |
+| `github.com/danielgtaylor/huma/v2`  | v2.41.0 | with the `humago` adapter and `sse`    |
+| `go.yaml.in/yaml/v4`                | v4.0.0  |                                        |
+| `github.com/fsnotify/fsnotify`      | v1.10.1 |                                        |
+| `github.com/bmatcuk/doublestar/v4`  | v4.10.4 | v4.10.5 to v4.10.7 all landed 2026-11-22 |
+
+Frontend (`web/package.json`):
+
+| Dependency              | Version                     | Notes                                       |
+|-------------------------|-----------------------------|---------------------------------------------|
+| Node                    | 26.13.1 (LTS)               | `web/.node-version`, `engines >=26`         |
+| pnpm                    | 12.22.0                     | latest 12.23.0 too new                      |
+| `vite-plus`             | 1.6.0                       | held back from 1.7.0+; see below            |
+| `vite`                  | `@voidzero-dev/vite-plus-core@1.6.0` | npm alias; bump with `vite-plus` |
+| `typescript`            | 7.0.2                       | editor and tooling; `vp check` uses tsgolint |
+| `react`, `react-dom`    | 19.3.1                      |                                             |
+| `@types/react`, `@types/react-dom` | 19.3.0           |                                             |
+| `@vitejs/plugin-react`  | 6.3.0                       |                                             |
+| `tailwindcss`, `@tailwindcss/vite` | 4.3.5            |                                             |
+| `@base-ui/react`        | 1.9.0                       | renamed from `@base-ui-components/react`    |
+| `@mdxeditor/editor`     | 4.5.0                       |                                             |
+| `@xyflow/react`         | 13.0.2                      | React Flow; latest 13.0.3 too new           |
+| `elkjs`                 | 0.12.1                      |                                             |
+| `mermaid`               | 12.3.0                      |                                             |
+| `@hey-api/openapi-ts`   | 0.0.0-next-20260930190945   | prerelease; see below                       |
+
+Tools: just 1.59.0, goreleaser v2.20.3, golangci-lint v2.15.0.
+
+Two pins need care:
+
+- `@hey-api/openapi-ts` stable (0.99.0) imports the TypeScript compiler's
+  JS API, which TypeScript 7 no longer ships, and its peer range cannot
+  be satisfied alongside TypeScript 7. The `next` prerelease does not
+  depend on `typescript` and generates code that type-checks under 7.
+  Move to the first stable release that does the same.
+- vite-plus stays on 1.6.0. From 1.7.0 it type-checks with `tsrs`, and
+  pnpm's trust policy rejects that package as a possible takeover because
+  the npm name belonged to an unrelated publisher before the Oxc project
+  took it over. Staying on 1.6.0 keeps the policy free of exclusions.
+  When moving past it, note that 1.7.0 also switches the core alias to
+  Vite-style versions (`vite-plus-core@8.3.x`).
 
 ### Repository layout
 
 ```
-cmd/beaver-blueprint/   main package
-internal/blueprint/     core: discovery, parsing, writing, schema, validation, graph, drift
-internal/cli/           Cobra commands (thin layer over internal/blueprint)
-internal/server/        Huma API, SSE, embedded static files
-skills/                 the three SKILL.md directories, embedded
-api/openapi.json        generated, committed
-web/                    Vite + React app; web/dist is embedded
-DESIGN.md               this file
-justfile                build tasks
-.goreleaser.yaml        release config
-LICENSE                 MIT
+cmd/beaver-blueprint/        main package
+internal/core/               discovery, parsing, writing, schema, validation, graph, drift
+internal/cli/                Cobra commands (thin layer over internal/core)
+internal/server/             Huma API, SSE, static file serving
+internal/server/openapigen/  writes web/openapi.json
+skills/                      the two SKILL.md directories, embedded
+web/                         Vite+ React app; web/dist is embedded by web/embed.go
+web/openapi.json             generated, committed; input to the client codegen
+web/src/api/generated/       Hey API client, generated, committed
+DESIGN.md                    this file
+justfile                     build tasks
+.goreleaser.yaml             release config
+.github/                     CI workflow and Dependabot
+LICENSE                      MIT
 ```
+
+`internal/server` takes the UI as an `fs.FS` and does not import `web`,
+so `openapigen` builds before `web/dist` exists.
 
 ### Development workflow
 
 - `just web` builds the frontend; `just openapi` regenerates the OpenAPI
   document and TypeScript types; `just build` runs both then builds the
   Go binary. The Go build fails loudly if `web/dist` is missing.
-- During UI development the Vite dev server proxies `/api` to a running
-  `beaver-blueprint serve`.
+- `just check` runs `go vet`, golangci-lint, and `vp check`; `just test`
+  runs the Go tests; `just ci` adds the codegen diff check. CI runs
+  `just ci` with SHA-pinned actions.
+- During UI development `just dev` (`vp dev`) proxies `/api` to a
+  running `beaver-blueprint serve`.
 - Releases via goreleaser: linux, macOS, Windows on amd64 and arm64.
-  Linux is the day-to-day tested platform. `go install` also works.
+  Linux is the day-to-day tested platform. `go install` is not
+  supported: `web/dist` is gitignored, so the module source has no built
+  UI to embed and the build fails. Install from a release binary, or
+  clone and run `just build`.
 
 ## Testing
 
-- `internal/blueprint`: golden-file tests for parsing and writing, table
+- `internal/core`: golden-file tests for parsing and writing, table
   tests for id validation, reference resolution, and heading checks,
   validation tests mirroring `check`, and drift tests against temporary
   git repositories with scripted histories.
 - `internal/cli`: command tests against a temporary directory.
 - `internal/server`: handler tests through Huma's test helpers; a
-  staleness check that `api/openapi.json` matches the code.
-- Frontend: type checking and lint only; no component tests in v1.
+  staleness check that `web/openapi.json` matches the code.
+- Frontend: `vp check` (format, lint, type check) only; no component
+  tests in v1.
 
 ## Build order
 
